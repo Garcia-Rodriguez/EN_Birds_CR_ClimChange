@@ -1,0 +1,396 @@
+#============================SPECIES DISTRIBUTION MODELLING==========================#
+library(rJava)
+library(terra)
+library(ENMeval)
+library(raster)
+library(dplyr)
+library(sf)
+library(rgdal)
+library(usdm)
+library(viridis)
+library(ecospat)
+library(geodata)
+
+#RUN MODELS IN LOOP
+SDMs <- lapply(1:6, function(x){
+ print(paste("Processing:", Spp[x]))
+ 
+ ##Model calibration 
+ ENMevaluate(occs = occs.thin[[x]], 
+             envs = calib.area_shp_vif[[x]], ##only reads raster 
+             bg = bg.points[[x]],
+             algorithm = 'maxent.jar', 
+             partitions = 'block', 
+             tune.args = list(fc = c("L","H","Q","LH","LQ","QH","LQH"), 
+             rm = seq(from=1,to=5, by=0.5)),
+             updateProgress = TRUE, 
+             taxon.name = sp_code[x],
+             raster.preds = FALSE)
+              }
+              )
+names(SDMs) <- sp_code
+
+#######################################################################
+#
+#  SELECT BEST MODEL FOR EACH SPECIES BASED ON HIGHEST BCI & LOWEST OR
+#
+#######################################################################
+best.model.args <- lapply(1:6, function(x) {
+
+#Extract results
+results<- data.frame(SDMs[[x]]@results)
+
+#Identify the best model and extract the line with the info for the selected model
+evalmetrics.BEST <- results %>%
+  select(tune.args, cbi.val.avg, auc.val.avg, or.mtp.avg, or.10p.avg) %>%
+  mutate(Species = sp_code[[x]]) %>%
+  relocate(Species, .before = everything()) %>%
+  mutate(
+    # Composite score (adjust weights as needed)
+    # Weighted more toward CBI (best metric for presence-only)
+    composite_score = (cbi.val.avg * 0.5) + 
+      (1-or.mtp.avg) * 0.5,
+    rank_overall = rank(desc(composite_score))
+  ) %>%
+  arrange(desc(composite_score)) %>% slice(1)
+}
+)
+
+names(best.model.args) <- sp_code
+
+##############################################################################
+#
+#               EXTRACT BEST MODEL AND PROJECT TO COSTA RICA
+#
+##############################################################################
+
+################################################################################
+#        PROJECT MODEL TO COSTA RICA (CURRENT CONDITIONS-CONTINUOUS)
+################################################################################
+
+###Create 1 folder per species in the RASTERS folder
+
+lapply(1:6, function(x) {
+  dir.create(paste0("SDMs/RESULTS/RASTERS/", sp_code[x]))
+})
+
+## Project the models and save them in continouos and binary visualizations (.tif)
+models.current.r <- lapply(1:6, function(x)
+  {
+##Index of the models selected above for each species
+index.best <- which(SDMs[[x]]@results$tune.args == 
+                      best.model.args[[x]]$tune.args[[1]])
+
+#Extract the optimal model
+mod.opt <- eval.models(SDMs[[x]])[[best.model.args[[x]]$tune.args[[1]]]]
+
+#Project the model across all of Costa Rica
+clim.cr <- terra::subset(wc.CR, subset = names(wc.CR) 
+                  %in% names(calib.area_shp_vif[[x]]))##para proyectar en todo CR
+
+mod.final<-dismo::predict(mod.opt, clim.cr, 
+                          args='outputformat=cloglog')##usar abo.cr
+
+plot(mod.final, col=viridis(10,option = "B"), main= paste0(Spp[[x]],
+     "  ", best.model.args[[x]]$tune.args[[1]]))
+
+points(occs.thin[[x]], col="blue", pch= 19)
+
+writeRaster(mod.final,paste0("SDMs/RESULTS/RASTERS/",sp_code[[x]],"/",sp_code[[x]], "_CURRENT_CONT.tif"), overwrite=TRUE)
+
+###Binarize
+#Select threshold
+p10_threshold <- mod.opt@results[
+  "X10.percentile.training.presence.Cloglog.threshold", 
+]
+
+#Binarize, plot and save
+p10<- mod.final > p10_threshold[[1]]
+plot(p10, col=c("black","yellow"))
+points(occs.thin[[x]], col="blue", pch= 21)
+
+#Save the binary raster
+writeRaster(p10,paste0("SDMs/RESULTS/RASTERS/",sp_code[[x]],"/",sp_code[[x]], "_CURRENT_BINARY.tif"), overwrite=TRUE)
+
+return(mod.final)
+}
+)
+
+################################################################################
+#                                                                              #  
+#                           PROJECT TO FUTURE SCENARIOS                        # 
+#                                                                              #    
+################################################################################
+# Here we project the predictions to all the GCMs, Scenarios and Periods per species, to store the results in the respective species folder
+
+# 1- Load all the future climates
+# Get list of all .tif or .tiff files in the folder
+tiff_files <- list.files(path = "future_climate_data/cropped", 
+                         pattern = "\\.tif$|\\.tiff$", 
+                         full.names = TRUE)
+
+# Read all TIFF files into a list
+future.clims_list <- lapply(tiff_files, function(x) {
+  terra::rast(x)  # using terra::rast(x)  
+  # using terra package
+  # or: stack() for multi-layer TIFFs
+})
+
+##Clean the names of each scenario to then call them in the function and save files with shorter names
+future_codes<- gsub("future_climate_data/cropped/", "_",tiff_files)
+future_codes<- gsub("_cropped.tif", "",future_codes)
+future_codes<- gsub("ESM5_ssp", "_",future_codes)
+future_codes<- gsub("-CM4-8_ssp", "_",future_codes)
+future_codes<- gsub("_ssp", "_",future_codes)
+
+names(future.clims_list) <- future_codes ##Now each scenario has a shorter name
+
+
+names(future.clims_list[[x]]) <- names(wc.CR)
+
+future.clims_list_backup <- future.clims_list
+
+################################################################################
+
+###Project model for each species separately 
+
+Abo.future <- lapply(1:36, function(x){
+
+# 1. Get the climate data
+scenario<- future.clims_list[[x]] #choose scenario
+names(scenario) <- names(wc.CR) ## equalize names
+
+##Get the index of the models selected above as optimal for each species
+index.best <- which(SDMs$Abo@results$tune.args == 
+                      best.model.args$Abo$tune.args[[1]])
+
+#Extract the optimal model
+mod.opt <- eval.models(SDMs$Abo)[[best.model.args$Abo$tune.args[[1]]]]
+
+#Project the model across all of Costa Rica
+clim.fut <- terra::subset(scenario, subset = names(scenario) 
+                 %in% names(calib.area_shp_vif$Abo))##para proyectar en todo CR
+
+mod.final<-dismo::predict(mod.opt, clim.fut, 
+                          args='outputformat=cloglog')##usar abo.cr
+
+plot(mod.final, col=viridis(10,option = "B"), main= paste0("Abo"
+                                                           , future_codes[[x]]))
+
+writeRaster(mod.final,paste0("SDMs/RESULTS/RASTERS/Abo/Abo", future_codes[[x]], "_CONT.tif"), overwrite=TRUE)
+
+###Binarize
+#Select threshold
+p10_threshold <- mod.opt@results[
+  "X10.percentile.training.presence.Cloglog.threshold", 
+]
+
+#Binarize and save
+p10<- mod.final > p10_threshold[[1]]
+
+#Save the binary raster
+writeRaster(p10,paste0("SDMs/RESULTS/RASTERS/Abo/Abo", future_codes[[x]], "_BINARY.tif"), overwrite=TRUE)
+
+return(mod.final)
+})
+
+Aam.future <- lapply(1:36, function(x){
+  
+  # 1. Get the climate data
+  scenario<- future.clims_list[[x]] #choose scenario
+  names(scenario) <- names(wc.CR) ## equalize names
+  
+  ##Get the index of the models selected above as optimal for each species
+  index.best <- which(SDMs$Aam@results$tune.args == 
+                        best.model.args$Aam$tune.args[[1]])
+  
+  #Extract the optimal model
+  mod.opt <- eval.models(SDMs$Aam)[[best.model.args$Aam$tune.args[[1]]]]
+  
+  #Project the model across all of Costa Rica
+  clim.fut <- terra::subset(scenario, subset = names(scenario) 
+                            %in% names(calib.area_shp_vif$Aam))##para proyectar en todo CR
+  
+  mod.final<-dismo::predict(mod.opt, clim.fut, 
+                            args='outputformat=cloglog')##usar Aam.cr
+  
+  plot(mod.final, col=viridis(10,option = "B"), main= paste0("Aam"
+                                                             , future_codes[[x]]))
+  
+  writeRaster(mod.final,paste0("SDMs/RESULTS/RASTERS/Aam/Aam", future_codes[[x]], "_CONT.tif"), overwrite=TRUE)
+  
+  ###Binarize
+  #Select threshold
+  p10_threshold <- mod.opt@results[
+    "X10.percentile.training.presence.Cloglog.threshold", 
+  ]
+  
+  #Binarize and save
+  p10<- mod.final > p10_threshold[[1]]
+  
+  #Save the binary raster
+  writeRaster(p10,paste0("SDMs/RESULTS/RASTERS/Aam/Aam", future_codes[[x]], "_BINARY.tif"), overwrite=TRUE)
+  
+  return(mod.final)
+})
+
+Aau.future <- lapply(1:36, function(x){
+  
+  # 1. Get the climate data
+  scenario<- future.clims_list[[x]] #choose scenario
+  names(scenario) <- names(wc.CR) ## equalize names
+  
+  ##Get the index of the models selected above as optimal for each species
+  index.best <- which(SDMs$Aau@results$tune.args == 
+                        best.model.args$Aau$tune.args[[1]])
+  
+  #Extract the optimal model
+  mod.opt <- eval.models(SDMs$Aau)[[best.model.args$Aau$tune.args[[1]]]]
+  
+  #Project the model across all of Costa Rica
+  clim.fut <- terra::subset(scenario, subset = names(scenario) 
+                            %in% names(calib.area_shp_vif$Aau))##para proyectar en todo CR
+  
+  mod.final<-dismo::predict(mod.opt, clim.fut, 
+                            args='outputformat=cloglog')##usar Aau.cr
+  
+  plot(mod.final, col=viridis(10,option = "B"), main= paste0("Aau"
+                                                             , future_codes[[x]]))
+  
+  writeRaster(mod.final,paste0("SDMs/RESULTS/RASTERS/Aau/Aau", future_codes[[x]], "_CONT.tif"), overwrite=TRUE)
+  
+  ###Binarize
+  #Select threshold
+  p10_threshold <- mod.opt@results[
+    "X10.percentile.training.presence.Cloglog.threshold", 
+  ]
+  
+  #Binarize and save
+  p10<- mod.final > p10_threshold[[1]]
+  
+  #Save the binary raster
+  writeRaster(p10,paste0("SDMs/RESULTS/RASTERS/Aau/Aau", future_codes[[x]], "_BINARY.tif"), overwrite=TRUE)
+  
+  return(mod.final)
+})
+
+Can.future <- lapply(1:36, function(x){
+  
+  # 1. Get the climate data
+  scenario<- future.clims_list[[x]] #choose scenario
+  names(scenario) <- names(wc.CR) ## equalize names
+  
+  ##Get the index of the models selected above as optimal for each species
+  index.best <- which(SDMs$Can@results$tune.args == 
+                        best.model.args$Can$tune.args[[1]])
+  
+  #Extract the optimal model
+  mod.opt <- eval.models(SDMs$Can)[[best.model.args$Can$tune.args[[1]]]]
+  
+  #Project the model across all of Costa Rica
+  clim.fut <- terra::subset(scenario, subset = names(scenario) 
+                            %in% names(calib.area_shp_vif$Can))##para proyectar en todo CR
+  
+  mod.final<-dismo::predict(mod.opt, clim.fut, 
+                            args='outputformat=cloglog')##usar Can.cr
+  
+  plot(mod.final, col=viridis(10,option = "B"), main= paste0("Can"
+                                                             , future_codes[[x]]))
+  
+  writeRaster(mod.final,paste0("SDMs/RESULTS/RASTERS/Can/Can", future_codes[[x]], "_CONT.tif"), overwrite=TRUE)
+  
+  ###Binarize
+  #Select threshold
+  p10_threshold <- mod.opt@results[
+    "X10.percentile.training.presence.Cloglog.threshold", 
+  ]
+  
+  #Binarize and save
+  p10<- mod.final > p10_threshold[[1]]
+  
+  #Save the binary raster
+  writeRaster(p10,paste0("SDMs/RESULTS/RASTERS/Can/Can", future_codes[[x]], "_BINARY.tif"), overwrite=TRUE)
+  
+  return(mod.final)
+})
+
+Cgl.future <- lapply(1:36, function(x){
+  
+  # 1. Get the climate data
+  scenario<- future.clims_list[[x]] #choose scenario
+  names(scenario) <- names(wc.CR) ## equalize names
+  
+  ##Get the index of the models selected above as optimal for each species
+  index.best <- which(SDMs$Cgl@results$tune.args == 
+                        best.model.args$Cgl$tune.args[[1]])
+  
+  #Extract the optimal model
+  mod.opt <- eval.models(SDMs$Cgl)[[best.model.args$Cgl$tune.args[[1]]]]
+  
+  #Project the model across all of Costa Rica
+  clim.fut <- terra::subset(scenario, subset = names(scenario) 
+                            %in% names(calib.area_shp_vif$Cgl))##para proyectar en todo CR
+  
+  mod.final<-dismo::predict(mod.opt, clim.fut, 
+                            args='outputformat=cloglog')##usar Cgl.cr
+  
+  plot(mod.final, col=viridis(10,option = "B"), main= paste0("Cgl"
+                                                             , future_codes[[x]]))
+  
+  writeRaster(mod.final,paste0("SDMs/RESULTS/RASTERS/Cgl/Cgl", future_codes[[x]], "_CONT.tif"), overwrite=TRUE)
+  
+  ###Binarize
+  #Select threshold
+  p10_threshold <- mod.opt@results[
+    "X10.percentile.training.presence.Cloglog.threshold", 
+  ]
+  
+  #Binarize and save
+  p10<- mod.final > p10_threshold[[1]]
+  
+  #Save the binary raster
+  writeRaster(p10,paste0("SDMs/RESULTS/RASTERS/Cgl/Cgl", future_codes[[x]], "_BINARY.tif"), overwrite=TRUE)
+  
+  return(mod.final)
+})
+
+Hat.future <- lapply(1:36, function(x){
+  
+  # 1. Get the climate data
+  scenario<- future.clims_list[[x]] #choose scenario
+  names(scenario) <- names(wc.CR) ## equalize names
+  
+  ##Get the index of the models selected above as optimal for each species
+  index.best <- which(SDMs$Hat@results$tune.args == 
+                        best.model.args$Hat$tune.args[[1]])
+  
+  #Extract the optimal model
+  mod.opt <- eval.models(SDMs$Hat)[[best.model.args$Hat$tune.args[[1]]]]
+  
+  #Project the model across all of Costa Rica
+  clim.fut <- terra::subset(scenario, subset = names(scenario) 
+                            %in% names(calib.area_shp_vif$Hat))##para proyectar en todo CR
+  
+  mod.final<-dismo::predict(mod.opt, clim.fut, 
+                            args='outputformat=cloglog')##usar Hat.cr
+  
+  plot(mod.final, col=viridis(10,option = "B"), main= paste0("Hat"
+                                                             , future_codes[[x]]))
+  
+  writeRaster(mod.final,paste0("SDMs/RESULTS/RASTERS/Hat/Hat", future_codes[[x]], "_CONT.tif"), overwrite=TRUE)
+  
+  ###Binarize
+  #Select threshold
+  p10_threshold <- mod.opt@results[
+    "X10.percentile.training.presence.Cloglog.threshold", 
+  ]
+  
+  #Binarize and save
+  p10<- mod.final > p10_threshold[[1]]
+  
+  #Save the binary raster
+  writeRaster(p10,paste0("SDMs/RESULTS/RASTERS/Hat/Hat", future_codes[[x]], "_BINARY.tif"), overwrite=TRUE)
+  
+  return(mod.final)
+})
+
