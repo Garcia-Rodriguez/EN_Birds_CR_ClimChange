@@ -18,7 +18,7 @@ library(geodata)
 ###                   
 ###########################################################
 # 1.  Load records for all species
-obs.data <- read.csv ("SDMs/Data/Occs.csv")
+obs.data <- read.csv ("Data/Occs.csv")
 Spp<-unique(obs.data$species) # get species names
 sp_code <- c("Abo","Aau","Aam","Can","Cgl","Hat") #create a short name for each
 
