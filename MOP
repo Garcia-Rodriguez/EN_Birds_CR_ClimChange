@@ -1,0 +1,229 @@
+library(terra)
+library(geodata)
+library(dplyr)
+
+###############################################################################
+
+########################## CURRENT REGIONAL CLIMATE ###########################
+
+###############################################################################
+#Download WC data
+WC_NIC_CRI_PAN<- worldclim_country(country =c("Nicaragua","Costa Rica","Panama"),
+var= "bio", res= 0.5)
+
+WC_region <- mosaic(WC_NIC_CRI_PAN[1], WC_NIC_CRI_PAN[2], WC_NIC_CRI_PAN[3], 
+fun = "mean")
+
+plot(WC_region[[1]])
+  
+###############################################################################
+
+#                          CURRENT CLIMATE per SPECIES                        #
+
+###############################################################################
+###Per species calibration areas
+# Define species names
+species_list <- c("Abo", "Aam", "Aau", "Can", "Cgl", "Hat")  
+
+# Create empty list to store results
+current_clim <- list()
+
+# Loop through each species
+for(sp in species_list) {
+  
+  # Load shapefile
+  shp_file <- paste0("Spp_shps/", sp, ".shp")
+  species_shp <- vect(shp_file)
+  
+  # Create buffer and extract climate data
+  buffer_shp <- buffer(species_shp, width = 50000)
+  current_species <- mask(WC_region, buffer_shp)
+  current_species <- crop(current_species, buffer_shp)
+  
+  # Store in list
+  current_clim[[sp]] <- current_species
+  
+  print(paste("Processed species:", sp))
+}
+
+ 
+###############################################################################
+
+########################## FUTURE SCENARIOS  ##################################
+
+###############################################################################
+# Load future scenarios (all the cropped2 RDS files, in total 24 )
+future_path <- "future_climate_data/cropped"
+future_files <- list.files(future_path, pattern = "\\.rds$", full.names = TRUE)
+
+# Create a list of future scenarios
+future_scenarios <- list()
+for (file in future_files) {
+  scenario_name <- gsub("_cropped\\.rds$", "", basename(file))
+  future_scenarios[[scenario_name]] <- readRDS(file)
+  cat("  Loaded:", scenario_name, "\n")
+}
+
+cat(paste("Current data:", nlyr(WC_region), "layers\n"))
+cat(paste("Future scenarios:", length(future_scenarios), "\n"))
+cat(paste("Future data:", nlyr(future_scenarios[[1]]), "layers\n"))
+
+plot(future_scenarios$CanESM5_ssp245_2081_2100[[1]])
+
+###############################################################################
+
+############################## MOP ANALYSIS ###################################
+
+###############################################################################
+# Install and load
+#install.packages("mop")
+library(mop)
+
+###Define the per species list of variables used for SDMs
+vars_Abo <- c("wc2.1_30s_bio_2", "wc2.1_30s_bio_3", "wc2.1_30s_bio_4", "wc2.1_30s_bio_8", 
+              "wc2.1_30s_bio_14", "wc2.1_30s_bio_15", "wc2.1_30s_bio_16", "wc2.1_30s_bio_18",  "wc2.1_30s_bio_19"
+              )
+
+vars_Aam <- c("wc2.1_30s_bio_2","wc2.1_30s_bio_4", "wc2.1_30s_bio_8", "wc2.1_30s_bio_13",
+              "wc2.1_30s_bio_14", "wc2.1_30s_bio_15", "wc2.1_30s_bio_18",  "wc2.1_30s_bio_19"
+              )
+
+vars_Aau <- c("wc2.1_30s_bio_3","wc2.1_30s_bio_4", "wc2.1_30s_bio_7", "wc2.1_30s_bio_8", 
+              "wc2.1_30s_bio_13","wc2.1_30s_bio_14", "wc2.1_30s_bio_15", "wc2.1_30s_bio_18",  "wc2.1_30s_bio_19")
+
+vars_Can <- c("wc2.1_30s_bio_2","wc2.1_30s_bio_3","wc2.1_30s_bio_4", "wc2.1_30s_bio_8", 
+              "wc2.1_30s_bio_14", "wc2.1_30s_bio_15", "wc2.1_30s_bio_16", "wc2.1_30s_bio_18",  "wc2.1_30s_bio_19")
+
+vars_Cgl <- c("wc2.1_30s_bio_2","wc2.1_30s_bio_3","wc2.1_30s_bio_4", "wc2.1_30s_bio_8", 
+              "wc2.1_30s_bio_14", "wc2.1_30s_bio_15", "wc2.1_30s_bio_16", "wc2.1_30s_bio_18",  "wc2.1_30s_bio_19")
+
+vars_Hat <- c("wc2.1_30s_bio_3","wc2.1_30s_bio_4", "wc2.1_30s_bio_7", 
+              "wc2.1_30s_bio_15", "wc2.1_30s_bio_16", "wc2.1_30s_bio_18",  "wc2.1_30s_bio_19")
+
+vars_list <- list(vars_Abo, vars_Aam, vars_Aau, vars_Can, vars_Cgl, vars_Hat)
+
+####RUN MOP for ALL SCENARIOS for EACH SPECIES considering species-specific 
+####calibration areas and set of variables used in the SDMs
+
+# Create the ResultsMOP folder if it doesn't exist
+if (!dir.exists("ResultsMOP")) {
+  dir.create("ResultsMOP")
+  cat("Created ResultsMOP folder\n")
+}
+
+# Create a list to store results for all species
+all_species_mop_results <- list()
+
+# Loop through each species
+for(s in 1:6) { #length(current_clim) 
+  species_name <- names(current_clim)[s]  # Get species name
+  cat("\n========== Processing species:", species_name, "==========\n")
+  
+  # Get current climate data for this species
+  current_species <- current_clim[[s]]
+  
+  # Get variable names for this species
+  vars_species <- vars_list[[s]]
+  
+  # Create a list to store results for this species across scenarios
+  species_mop_results <- list()
+  
+  # Create a data frame to store the summary table for this species
+  species_summary_table <- data.frame(
+    Scenario = character(),
+    NAC_percentage = numeric(),
+    nvars = numeric(),
+    stringsAsFactors = FALSE
+  )
+
+  library(parallel)
+
+  # Create the ResultsMOP folder to save each analysis
+  if (!dir.exists("ResultsMOP")) {
+    dir.create("ResultsMOP")
+    cat("Created ResultsMOP folder\n")
+  }
+  
+  # Loop through all scenarios for this species
+  for (i in 1:36) {#length(future_scenarios)
+    scenario_name <- names(future_scenarios)[i]
+    cat("\n  Processing scenario:", scenario_name, "\n")
+    
+    # Standardize variable names (make sure they match between current and future)
+    names(WC_region) -> names(future_scenarios[[i]])
+    
+    # Run MOP for this species and scenario
+    species_mop_results[[scenario_name]] <- mop(
+      m = current_species[[vars_species]],                    # Current variables for this species 
+      g = future_scenarios[[i]][[vars_species]],              # Same vars for future
+      type = "simple",
+      calculate_distance = TRUE,
+      progress_bar = TRUE,
+      distance = "mahalanobis",
+      #scale = TRUE, center = TRUE,    
+      #rescale_distance = TRUE,
+      parallel = TRUE, n_cores = detectCores()- 0.5*detectCores(), 
+      percentage = 10 ,
+      where_distance = "in_range"
+    )
+    
+    # Store the result
+    species_mop_results[[scenario_name]] -> mop_result
+    
+    # Capture the summary text
+    summary_text <- capture.output(summary(species_mop_results[[scenario_name]]))
+    
+    # Extract NAC percentage
+    perc_line <- grep("Percentage", summary_text, value = TRUE)
+    if(length(perc_line) > 0) {
+      nac_value <- as.numeric(gsub(".*?([0-9.]+)%.*", "\\1", perc_line))
+    } else {
+      nac_value <- NA
+      cat("    WARNING: Could not find percentage line in summary\n")
+    }
+    
+    # Extract nvars (number of variables with NAC)
+    nvars_line <- grep("Variables with NAC in 'simple'", summary_text, value = TRUE)
+    if(length(nvars_line) > 0) {
+      nvars_value <- as.numeric(gsub(".*= (\\d+)", "\\1", nvars_line))
+    } else {
+      nvars_value <- NA
+      cat("    WARNING: Could not find nvars line in summary\n")
+    }
+    
+    # Debug output
+    cat("    Extracted - NAC:", nac_value, "%, nvars:", nvars_value, "\n")
+    
+    # Add to the summary table
+    new_row <- data.frame(
+      Scenario = scenario_name,
+      NAC_percentage = nac_value,
+      nvars = nvars_value,
+      stringsAsFactors = FALSE
+    )
+    
+    species_summary_table <- rbind(species_summary_table, new_row)
+    
+    # Save individual result to ResultsMOP folder
+    save_filename <- paste0("ResultsMOP/", species_name, "_", scenario_name, ".rds")
+    saveRDS(mop_result, file = save_filename)
+    cat("    Saved to:", save_filename, "\n")
+    cat("    Completed\n")
+  }
+  
+  # Print the summary table for this species
+  cat("\n---------- Summary Table for", species_name, "----------\n")
+  print(species_summary_table)
+  cat("----------------------------------------\n")
+  
+  # Save the summary table to a CSV file
+  table_filename <- paste0("ResultsMOP/", species_name, "_summary_table.csv")
+  write.csv(species_summary_table, file = table_filename, row.names = FALSE)
+  cat("Summary table saved to:", table_filename, "\n")
+  
+  # Store all scenarios results for this species
+  all_species_mop_results[[species_name]] <- list(
+    results = species_mop_results,
+    summary_table = species_summary_table
+  )
+}
