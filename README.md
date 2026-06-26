@@ -11,9 +11,9 @@ The repository contains three R code files:
 3_MOP.R to test for non-analogous climates in the future scenarios used here for projection.
 
 The data needed to run the above codes is also available here and includes:
-A. Occs.csv --> The occurrence records for all species
+A. Data/Occs.csv --> The occurrence records for all species
 
-B. A folder with the IUCN distribution range polygons for each species
+B. A folder (Spp_shps) with the IUCN distribution range polygons for each species
 
 Code 2 uses as input the outputs generated in Code 1 from the available files. Code 3 also uses the IUCN ranges for the definition of areas to be compared among time frames.
 
