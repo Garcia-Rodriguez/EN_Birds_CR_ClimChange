@@ -1,0 +1,132 @@
+#============================DATA PREPARATION===========================#
+library(rJava)
+library(terra)
+library(ENMeval)
+library(raster)
+library(dplyr)
+library(sf)
+library(rgdal)
+library(usdm)
+library(viridis)
+library(ecospat)
+library(geodata)
+
+
+###########################################################
+###                   
+###                   OCCURRENCE RECORDS
+###                   
+###########################################################
+# 1.  Load records for all species
+obs.data <- read.csv ("SDMs/Data/Occs.csv")
+Spp<-unique(obs.data$species) # get species names
+sp_code <- c("Abo","Aau","Aam","Can","Cgl","Hat") #create a short name for each
+
+### 2. Split the data by spp
+occs.sp <- lapply(1:6, function(x) {
+  print(paste("Processing:", Spp[x]))
+  obs.data %>%
+    filter(species == Spp[x])
+})
+
+names(occs.sp) <- sp_code # name the list elements with the species names
+
+### 3. Apply a spatial thinning (5 km minimum distance among points)
+set.seed(48)
+
+occs.thin <- lapply(1:6, function(x) {
+  print(paste("Processing:", Spp[x]))
+  occs.sp.thin<- spThin::thin(loc.data =occs.sp[[x]], lat.col = "lat", long.col = "lon", spec.col = "species",  thin.par = 5, reps = 10, locs.thinned.list.return = TRUE, write.files = FALSE)
+  
+  #Choose the first combination
+  occs.sp.thin2<-occs.sp.thin[[1]]
+  
+  print(paste("Choosing one set of thinned data for:", Spp[x]))
+  
+  print(paste("============================================="))
+  
+  print(paste("============MOVING TO NEXT SPECIES==========="))
+  
+  #Standardize column name
+  names(occs.sp.thin2) <- c("x", "y")
+  
+  return(occs.sp.thin2)
+})
+
+names(occs.thin) <- sp_code
+
+sapply(occs.thin, nrow) ##check number of records per species after thinning
+
+
+############################################################
+
+#                     CLIMATIC DATA
+
+############################################################
+###Download current conditions for the study region (NIC-CR-PAN):
+WC_NIC_CRI_PAN<- worldclim_country(country =c("Mexico","Guatemala","Belize","El Salvador","Honduras","Nicaragua","Costa Rica","Panama","Colombia"),, var= "bio", res= 0.5)
+WC_region <- mosaic(WC_NIC_CRI_PAN, fun = "mean")
+plot(WC_region[[1]])
+
+e.CR<-c(-86.5,-82,8,11.5)
+wc.CR<-crop(WC_region,e.CR)
+plot(wc.CR[[1]])
+
+
+################################################################################
+
+###                             CALIBRATION AREAS
+
+################################################################################
+calib.area_shp_vif <- lapply(1:6, function(x) {
+  print(paste("Processing:", sp_code[x]))
+  
+  #Create buffer
+  buffer_shp <- terra::aggregate(buffer(vect(paste0("Spp_shps/", sp_code[x], ".shp")), 
+                                        width = 50000))
+  
+  #Crop clim vars con buffer
+  buffer_shp.clim<-crop(mask(WC_region, buffer_shp), buffer_shp)
+  
+  #Checar colinearidad y reducir vars
+  vif.test <- vifstep(buffer_shp.clim, th = 10)
+  
+  # Exclude highly correlated variables
+  calibration.area.vif <- exclude(buffer_shp.clim, vif.test)
+  
+  return(calibration.area.vif)
+})
+
+names(calib.area_shp_vif) <- sp_code
+
+#Check one species
+x=4 #(Can)
+
+plot(calib.area_shp_vif[[x]][[x]], main= paste0("Calibration area for: ",sp_code[x]))
+
+
+##############################################################################
+###                        BACKGROUND POINTS                               ###
+##############################################################################
+bg.points <-  lapply(1:6, function(x){
+  print(paste("Processing: ", sp_code[x]))
+  
+  bg.points <- data.frame(
+    spatSample(calib.area_shp_vif[[x]][[1]], 
+               size = 5000, 
+               xy = TRUE, 
+               values = FALSE, 
+               na.rm = TRUE)
+  )
+  names(bg.points) <- c("x", "y")
+  
+  # Save plot to file
+  #png(paste0("BG_plots/", sp_code[x], "_background.png"), width = 800, height = 800) #optional
+  plot(calib.area_shp_vif[[x]][[1]], main = paste("BG points for ", sp_code[x]))
+  points(bg.points, pch = 20, cex = 1.2)
+  #dev.off()
+  
+  return(bg.points)
+})
+
+names(bg.points) <- sp_code
