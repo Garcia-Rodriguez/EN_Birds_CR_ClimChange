@@ -53,7 +53,7 @@ for(sp in species_list) {
 
 ###############################################################################
 # Load future scenarios (all the cropped2 RDS files, in total 24 )
-future_path <- "future_climate_data/cropped"
+future_path <- "Future_clims_sub"
 future_files <- list.files(future_path, pattern = "\\.rds$", full.names = TRUE)
 
 # Create a list of future scenarios
@@ -145,7 +145,7 @@ for(s in 1:6) { #length(current_clim)
   }
   
   # Loop through all scenarios for this species
-  for (i in 1:36) {#length(future_scenarios)
+  for (i in 1:length(future_scenarios)) {
     scenario_name <- names(future_scenarios)[i]
     cat("\n  Processing scenario:", scenario_name, "\n")
     
