@@ -16,5 +16,7 @@ A. Data/Occs.csv --> The occurrence records for all species
 
 B. A folder (Spp_shps) with the IUCN distribution range polygons for each species
 
+C. The folder "Future_clims_sub" stores climatic data for 7 example scenarios used to run the MOP analyses
+
 Code 2 uses as input the outputs generated in Code 1 from the available files. Code 3 also uses the IUCN ranges for the definition of areas to be compared among time frames.
 
