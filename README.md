@@ -3,6 +3,7 @@
 Codes and data used in the analysis presented in: Villegas-Retana et al. Current and future areas of conservation relevance for six endangered bird species in Costa Rica.
 
 The repository contains three R code files:
+
 1_Data_Prep_SDMs.R which processes the input data for the SDMs including occurrence records, calibration areas and background points
 
 2_SDMs.R which runs the model calibration for each species. This code also includes model selection, projections to 36 future climatic scenarios and binarization of optimal models for posterior estimations of suitable area
