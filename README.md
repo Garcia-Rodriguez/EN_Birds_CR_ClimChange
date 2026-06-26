@@ -1,6 +1,6 @@
 # EN_Birds_CR_ClimChange
 
-Codes and data used in the analysis presented in: Villegas-Retana et al. Current and future areas of conservation relevance for six endangered bird species in Costa Rica.
+Codes and data used in the main analyses presented in: Villegas-Retana et al. Current and future areas of conservation relevance for six endangered bird species in Costa Rica.
 
 The repository contains three R code files:
 
